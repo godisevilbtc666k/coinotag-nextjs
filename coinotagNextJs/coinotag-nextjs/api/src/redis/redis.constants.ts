@@ -1,0 +1,1 @@
+export const DIRECT_REDIS_CLIENT = 'DIRECT_REDIS_CLIENT'; 

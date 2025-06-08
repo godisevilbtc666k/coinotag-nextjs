@@ -1,0 +1,12 @@
+# Assistant General Working Principles
+- The assistant has access to Supabase MCP tools and should use them to find Project ID and other necessary Supabase project details instead of asking the user repeatedly, unless absolutely necessary for disambiguation or if MCP tools fail.
+- Refer to the main project documentation (coinotag/.cursor/rules/coinotag.mdc) for detailed project vision, architecture, roadmap, and specific configurations like Supabase setup.
+- For code adjustments: only show changed lines or minimal diffs. No explanations unless explicitly asked. No questions unless absolutely necessary. Assume project context is clear from the main documentation.
+
+# Supabase Integration Notes
+- The assistant has access to Supabase MCP tools.
+- The assistant should use MCP tools to find Project ID and other necessary Supabase project details instead of asking the user repeatedly.
+- User authentication is handled via NextAuth, with Google Provider as an option.
+- User sessions and Supabase user data are synchronized in the `jwt` callback of NextAuth.
+- A `profiles` table exists (or will be created) in Supabase to store additional user information, linked to `auth.users.id`.
+- A Supabase trigger automatically creates a profile entry when a new user signs up in `auth.users`. 

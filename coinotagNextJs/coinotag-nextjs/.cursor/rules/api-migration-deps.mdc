@@ -1,0 +1,227 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+// API Gateway için Bağımlılık Analizi: binanceService.ts ve coinInfoService.ts
+
+// 1. BinanceService Kullanımları ve Bağımlılıklar
+export const BinanceServiceUsage = {
+  // Ortak Tipler - API Gateway'de korunacak
+  types: [
+    "WsConnectionStatus", // ('connecting' | 'connected' | 'disconnected' | 'error' | 'fallback' | 'http')
+    "CryptoData", // (Temel kripto verisi - symbol, price, priceChangePercent, volume, vb.)
+    "BinanceTickerData", // (Binance WebSocket'ten gelen ham veri)
+    "FundingRateData", // (Fonlama oranı verisi)
+    "OpenInterestData", // (Açık pozisyon verisi)
+    "Kline", // (Mum çubuk verisi)
+    "IndicatorResults", // (Teknik analiz göstergeleri sonuçları)
+    "PivotPointResults", // (Pivot noktaları sonuçları)
+    "TrendAnalysisResult", // (Trend analizi sonucu)
+    "FibonacciLevels", // (Fibonacci seviyeleri)
+  ],
+  
+  // API/Frontende gösterilen veriler için ana fonksiyonlar
+  coreDataAccess: [
+    "useWsConnectionStatus", // WebSocket bağlantı durumu hook'u 
+    "getCurrentCryptoData", // Tüm kripto verilerini döndürür
+    "getCryptoDataBySymbol", // Belirli bir sembolün verisini döndürür
+    "fetchInitialCryptoData", // İlk yüklemede verileri çeker ve cache'ler
+    "fetchAllCryptoPrices", // Tüm fiyatları çeker
+    "forceFetchAllData", // Funding ve OI dahil tüm verileri çeker
+  ],
+  
+  // WebSocket yönetimi
+  wsManagement: [
+    "startWebSocketConnection", // WebSocket bağlantısını başlatır
+    "closeWebSocketConnection", // WebSocket bağlantısını kapatır
+    "isWebSocketConnected", // WebSocket bağlantı durumunu kontrol eder
+    "updateWsSymbols", // İzlenen sembolleri günceller (kullanımdan kalktı ama not al)
+    "getLastWebSocketActivityTime", // Son WebSocket aktivite zamanını alır
+    "setFundingRateEnabled", // Funding rate çekme/güncelleme özelliğini aç/kapa
+  ],
+  
+  // Piyasa verileri
+  marketData: [
+    "fetchFundingRates", // Funding rate verilerini çeker
+    "fetchBinanceOpenInterest", // Açık pozisyon verilerini çeker
+    "startFundingRateUpdates", // Periyodik funding rate güncellemelerini başlatır
+    "stopFundingRateUpdates", // Periyodik funding rate güncellemelerini durdurur
+    "calculateMarketCap", // Piyasa değerini hesaplar
+  ],
+  
+  // Teknik analiz
+  technicalAnalysis: [
+    "fetchKlineData", // Mum verilerini çeker
+    "calculateIndicators", // İndikatörleri hesaplar (RSI, MACD, vb.)
+    "calculatePivotPoints", // Pivot noktalarını hesaplar
+    "calculateFibonacciRetracement", // Fibonacci seviyelerini hesaplar
+    "determineTrend", // Trendi belirler
+    "determineSupportResistanceLevels", // Destek ve direnç seviyelerini belirler
+  ],
+  
+  // Alarm fonksiyonları
+  alerts: [
+    "getStoredPriceAlerts", // Kaydedilmiş fiyat alarmlarını alır
+    "saveAlertToLocalStorage", // Fiyat alarmını kaydeder
+    "removeAlert", // Fiyat alarmını kaldırır
+    "resetAlertTrigger", // Tetiklenmiş alarmı sıfırlar
+    "checkPriceAlerts", // Fiyat alarmlarını kontrol eder
+    "requestNotificationPermission", // Bildirim izni ister (Servis içinde tanımlı)
+  ],
+  
+  // Yardımcı fonksiyonlar (Servis içinde kullanılan)
+  utilities: [
+    "convertSymbolForBinanceApi", // Sembolü Binance API formatına dönüştürür
+    "normalizeSymbol", // Sembolü normalleştirir
+    "isSymbolInOurList", // Sembolün bizim listemizde olup olmadığını kontrol eder
+  ]
+};
+
+// 2. CoinInfoService Kullanımları ve Bağımlılıklar
+export const CoinInfoServiceUsage = {
+  // Tipler
+  types: [
+    "CoinGeckoInfo", // (CoinGecko API'den dönen coin detayları)
+  ],
+  
+  // Ana fonksiyonlar
+  functions: [
+    "getCoinDetails", // Belirli bir sembolün detaylarını getirir
+    "getMultipleCoinDetails", // Birden fazla sembolün detaylarını getirir
+    "getCoinGeckoIdForSymbol", // Sembol için CoinGecko ID'sini döndürür
+  ],
+  
+  // Veri eşleştirme (Servis içinde kullanılan)
+  mappings: [
+    "symbolToCoinGeckoId", // Sembol -> CoinGecko ID eşleştirme haritası
+    "manualSymbolToIdMap", // Manuel sembol -> ID eşleştirmesi
+  ]
+};
+
+// 3. Kullanım Alanları ve Bağımlılıklar
+export const UsageLocations = {
+  // Ana listeler ve pazarlar
+  "kripto-paralar/page.tsx": {
+    binanceService: [
+      "fetchInitialCryptoData",
+      "CryptoData" // (tip)
+    ],
+    coinInfoService: [] // Kullanılmıyor
+  },
+  
+  // Market istemcisi
+  "kripto-paralar/CryptoMarketClient.tsx": { // ve components/CryptoMarketClient.tsx
+    binanceService: [
+      "CryptoData", // (tip)
+      "startWebSocketConnection",
+      "fetchInitialCryptoData", 
+      "closeWebSocketConnection", // (kullanılmıyor ama potansiyel)
+      "useWsConnectionStatus",
+      "setFundingRateEnabled", // Yeni eklendi
+      "fetchFundingRates", // (kullanılmıyor ama potansiyel)
+      "getCurrentCryptoData",
+      "updateWsSymbols" // (kullanılmıyor ama potansiyel)
+    ],
+    coinInfoService: [] // Kullanılmıyor
+  },
+  
+  // Coin detay sayfası
+  "kripto-paralar/[symbol]/page.tsx": {
+    binanceService: [
+      "getCryptoDataBySymbol", 
+      "fetchAllCryptoPrices", // (kullanılmıyor ama potansiyel)
+      "CryptoData", // (tip)
+      "fetchFundingRates", // (kullanılmıyor ama potansiyel)
+      "forceFetchAllData" // (kullanılmıyor ama potansiyel)
+    ],
+    coinInfoService: [
+      "getCoinDetails", 
+      "CoinGeckoInfo" // (tip)
+    ]
+  },
+  
+  // Coin detay istemcisi
+  "kripto-paralar/[symbol]/CoinDetailClient.tsx": {
+    binanceService: [
+      "getCryptoDataBySymbol", 
+      "fetchKlineData",
+      "calculateIndicators",
+      "calculatePivotPoints",
+      "determineTrend",
+      "calculateFibonacciRetracement",
+      "determineSupportResistanceLevels",
+      // Tipler:
+      "Kline",
+      "IndicatorResults",
+      "PivotPointResults",
+      "TrendAnalysisResult",
+      "FibonacciLevels"
+    ],
+    coinInfoService: [
+      "CoinGeckoInfo" // (Sadece tip)
+    ]
+  },
+  
+  // Genel Bileşenler
+  "kripto-paralar/components": {
+    binanceService: [
+      // PriceAlerts.tsx:
+      "CryptoData", // (tip)
+      "saveAlertToLocalStorage",
+      "getStoredPriceAlerts",
+      "removeAlert",
+      "resetAlertTrigger",
+      // Diğerleri (CryptoMarketWrapper, CryptoTable, CryptoClientPage):
+      "CryptoData" // (tip)
+    ],
+    coinInfoService: []
+  },
+  
+  // Coin Detay Bileşenleri
+  "kripto-paralar/[symbol]/components": {
+    binanceService: [
+      // LightweightChartComponent 2.tsx:
+      "Kline", // (tip)
+      "IndicatorResults", // (tip)
+      "PivotPointResults", // (tip)
+      "FibonacciLevels", // (tip)
+      // LightweightChartComponent 3.tsx:
+      "Kline", // (tip)
+      "IndicatorResults", // (tip)
+      // TechnicalAnalysisSection.tsx:
+      "IndicatorResults", // (tip)
+      "PivotPointResults", // (tip)
+      "TrendAnalysisResult" // (tip)
+    ],
+    coinInfoService: [
+      // CoinDescription.tsx:
+      "CoinGeckoInfo" // (tip)
+    ]
+  }
+};
+
+// 4. API Gateway geçişi için yapılması gerekenler
+export const MigrationNotes = {
+  priorityModules: [
+    "RedisModule", // Öncelikle Redis bağlantısını kur
+    "WebsocketClientModule", // WebSocket bağlantısı için
+    "CacheUpdateModule", // Veri işleme ve önbelleğe alma için
+    "EventsModule", // SSE yayını için
+    "CoinInfoModule", // CoinGecko verileri için
+  ],
+  
+  coreTransitions: [
+    "Önce WebsocketClientModule: binanceService.ts'deki WebSocket işlevlerini taşı",
+    "CacheUpdateModule: veri işleme ve dönüştürme fonksiyonlarını taşı",
+    "EventsModule: Veri dağıtımı için SSE yapısı oluştur",
+    "CoinInfoModule: coinInfoService.ts'i doğrudan geçir, Redis cache'leme ekle"
+  ],
+  
+  frontendChanges: [
+    "Frontend kodu doğrudan SSE'ye bağlanacak şekilde güncelle",
+    "WebSocket bağlantısını API Gateway'e taşı, frontend SSE üzerinden veri alsın",
+    "Client tarafı hesaplamalar (teknik analiz) API endpointlerine taşı",
+    "Fiyat alarm yönetimi (localStorage) API endpointlerine taşınabilir (opsiyonel)"
+  ]
+};

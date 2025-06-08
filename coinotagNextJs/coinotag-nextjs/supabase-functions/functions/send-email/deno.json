@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "std/": "https://deno.land/std@0.224.0/",
+    "smtp": "https://deno.land/x/denomailer@1.6.0/mod.ts"
+  }
+} 

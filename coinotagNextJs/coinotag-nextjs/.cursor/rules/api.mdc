@@ -1,0 +1,165 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+
+**Prompt: Coinotag API Gateway (NestJS) Geliştirme Yönergesi**
+
+**Proje Amacı:** Binance (ve ileride diğer borsaların) gerçek zamanlı piyasa verilerini (spot, futures) almak, işlemek, Redis üzerinde önbelleğe almak ve Server-Sent Events (SSE) aracılığıyla frontend uygulamalarına verimli bir şekilde dağıtmak üzere tasarlanmış, ölçeklenebilir ve modüler bir NestJS API gateway oluşturmak. Ayrıca, isteğe bağlı olarak teknik analiz hesaplamaları ve CoinGecko'dan detaylı coin bilgileri sunmak.
+
+**Teknik Yığın ve Altyapı:**
+
+*   **Framework:** NestJS (TypeScript)
+*   **Deployment:** Google Cloud Run (Frankfurt bölgesi hedefleniyor, SSE için minimum instance ayarı gerekebilir)
+*   **Caching:** Upstash (Redis) - Frankfurt bölgesi (GCR ile düşük gecikme için)
+*   **Gizli Veri Yönetimi:** Google Secret Manager (API key'leri, Redis bağlantısı vb.)
+*   **Veri Kaynakları:**
+    *   Binance Spot Ticker (WebSocket - Aktif)
+    *   Binance Futures (Mark Price, Funding Rate, OI - WebSocket/REST - Planlandı P1)
+    *   CoinGecko API (Detaylı coin bilgisi için - Aktif)
+*   **Veri Dağıtımı:** Server-Sent Events (SSE)
+
+**Modül Yapısı ve Sorumluluklar (`api/src` altında):**
+
+1.  **`AppModule`:** Ana modül. Diğer tüm modülleri, `ConfigModule`'ü (ortam değişkenleri için) ve global servisleri (varsa) içermelidir.
+2.  **`RedisModule`:** Upstash Redis bağlantısını yapılandırır ve `DIRECT_REDIS_CLIENT` token'ı aracılığıyla enjekte edilebilir bir Redis client sağlar. Ortam değişkenlerinden (`UPSTASH_REDIS_URL`) bağlantı bilgilerini almalıdır.
+3.  **`WebsocketClientModule`:**
+    *   `BinanceWsService` içerir.
+    *   Binance Spot Ticker WebSocket akışına (`!ticker@arr`) bağlanır (`ws` kütüphanesi kullanılabilir).
+    *   Gelen ham ticker verilerini bir RxJS `Subject` (`tickerStream$`) aracılığıyla yayınlar.
+    *   Bağlantı kesilmesi durumunda yeniden bağlanma mekanizması içerir.
+    *   (P1) Binance Futures (Mark Price, Funding/OI) için benzer WS/REST istemcilerini içerecek şekilde genişletilebilir.
+4.  **`CacheUpdateModule`:**
+    *   `CacheUpdateService` içerir.
+    *   `WebsocketClientModule` ve diğer data-source modüllerinden (Binance Futures, Bybit vb.) gelen stream'lere abone olur.
+    *   Gelen ham ticker verilerini işler:
+        *   Merkezi `cleanSymbol` fonksiyonunu kullanarak sembolleri temizler.
+        *   Veriyi standart `ProcessedTicker` formatına dönüştürür (symbol, price, changePercent, volume, high, low, vb.). Binance Spot için 'volume' alanı, gelen 'q' (quote volume) değeri yerine 'v' (base volume) * 'c' (price) olarak hesaplanmaktadır (geçici deneme).
+        *   **Önemli:** Fiyatı olmayan veya geçersiz sembollü verileri filtreler.
+        *   Veriyi `latestTickerCache` (in-memory Map) üzerinde günceller.
+        *   Periyodik veya değişiklik olduğunda `updateRedisCache` metodunu tetikler.
+    *   **CoinGecko Veri Entegrasyonu:**
+        *   **Hızlı Güncelleme (5dk):** CoinGecko'dan `/coins/markets` endpoint'i ile popüler (top N) coinlerin market cap, rank gibi verilerini periyodik olarak çeker ve cache'i günceller.
+        *   **Yavaş Güncelleme (Saatlik):** Cache'deki market cap verisi eksik olan coinleri tespit eder ve CoinGecko'dan `/coins/{id}` endpoint'i ile tek tek, yavaşlatılmış (rate limit'e dikkat ederek) isteklerle çeker, cache'i tamamlar.
+    *   Tüm kaynaklardan gelen verileri birleştirir ve işlenmiş/zenginleştirilmiş veriyi `combinedTickerSubject` (RxJS Subject) aracılığıyla `EventsModule`'e yayınlar.
+    *   `updateRedisCache` metodu: `latestTickerCache` içeriğini Redis'e yazar (`ticker:processed:<symbol>` formatında).
+    *   `getAllTickersFromMemory` metodu: Bellekteki güncel ticker verilerini döndürür.
+5.  **`EventsModule`:**
+    *   `EventsController` içerir.
+    *   `/events/ticker` SSE endpoint'ini sağlar.
+    *   `CacheUpdateService`'teki `combinedTickerStream$`'a abone olur.
+    *   Yeni veri geldiğinde bağlı olan tüm SSE istemcilerine `ProcessedTicker[]` formatında veriyi push eder. (Verinin tamamını mı yoksa sadece güncellenenleri mi göndereceği optimize edilebilir - şu an cache'in tamamını göndermek daha basit olabilir).
+    *   İstemci bağlantılarını yönetir.
+6.  **`TechnicalAnalysisModule`:** (Mevcut haliyle korunmalı)
+    *   Teknik analiz hesaplamalarını (indikatörler, pivotlar vb.) yapan servisleri içerir.
+    *   İlgili Controller/Endpoint üzerinden TA sonuçlarını sunar.
+7.  **`CoinInfoModule`:** (Mevcut haliyle korunmalı)
+    *   `CoinInfoService` ve `CoinInfoController` içerir.
+    *   `/coins/:symbol/details` endpoint'i üzerinden CoinGecko'dan alınan detaylı coin bilgilerini (cache mekanizması ile) sunar.
+8.  **`BinanceApiModule`:** (Mevcut haliyle korunmalı)
+    *   Binance REST API ile etkileşim için servisler içerir (gerekliyse).
+
+**Genel Prensipler:**
+
+*   **Kod Kalitesi:** Temiz, okunabilir, modüler ve test edilebilir kod yazılmalıdır. NestJS prensiplerine uyulmalıdır.
+*   **Performans:** WebSocket ve SSE bağlantıları verimli yönetilmeli, Redis işlemleri optimize edilmelidir. Veri işleme darboğaz oluşturmamalıdır.
+*   **Hata Yönetimi:** Servislerde ve kontrollerde uygun hata yakalama ve loglama mekanizmaları bulunmalıdır (NestJS `Logger` kullanılmalı). Özellikle Redis ve WS bağlantı hataları düzgün yönetilmelidir.
+*   **Yapılandırma:** Tüm hassas bilgiler (API key'leri, Redis URL) ortam değişkenleri veya Google Secret Manager aracılığıyla yönetilmelidir.
+*   **Veri Tutarlılığı:** Sembol temizleme işlemi merkezi (`cache-update.service.ts` içindeki `cleanSymbol`) ve tutarlı olmalıdır. Cache ve SSE üzerinden gönderilen verilerde temizlenmiş sembol kullanılmalıdır.
+*   **Kaçınılması Gerekenler:** Bu API Gateway statik dosya veya doğrudan içerik (haber metni vb.) sunumu yapmamalıdır. Sorumluluğu gerçek zamanlı veri işleme, TA ve temel coin bilgisi ile sınırlı kalmalıdır.
+
+**Başlangıç ve Test:**
+
+*   Gerekli tüm bağımlılıklar (`@nestjs/common`, `redis`, `ws`, `rxjs`, `@nestjs/config`, `@nestjs/serve-static` (SSE için gerekebilir), vb.) `package.json` dosyasına eklenmelidir.
+*   `.env` dosyası Redis bağlantısı ve diğer gerekli yapılandırmalar için hazırlanmalıdır.
+*   Loglama seviyesi ayarlanabilir olmalıdır (verbose, debug, log, warn, error).
+*   Temel işlevsellik (WS bağlantısı, Redis yazma/okuma, SSE veri akışı) test edilmelidir.
+
+Bu prompt, `api-gateway`'in mevcut durumunu ve `coinotag.mdc`'deki hedefleri yansıtarak geliştirme sürecine rehberlik etmelidir.
+
+
+api/
+├── src/
+│   ├── main.ts                     # Uygulama giriş noktası
+│   ├── app.module.ts               # Ana NestJS modülü
+│   ├── app.controller.ts           # Kök endpoint (opsiyonel)
+│   ├── app.service.ts              # Kök servis (opsiyonel)
+│   │
+│   ├── config/                     # Uygulama yapılandırması (örn: .env yükleme)
+│   │   └── config.module.ts
+│   │
+│   ├── redis/                      # Redis bağlantı modülü
+│   │   ├── redis.module.ts
+│   │   └── redis.provider.ts       # Redis client'ı sağlar (DIRECT_REDIS_CLIENT)
+│   │
+│   ├── common/                     # Paylaşılan yardımcılar, tipler, decorator'lar
+│   │   ├── types/
+│   │   └── utils/
+│   │
+│   ├── data-sources/               # Dış veri kaynakları ile entegrasyon modülleri
+│   │   ├── binance/                # Binance Entegrasyonu
+│   │   │   ├── common/             # Binance özel tipler, sabitler
+│   │   │   │   └── binance.types.ts
+│   │   │   ├── spot/               # Spot Piyasa Verileri
+│   │   │   │   ├── binance-spot-ws.service.ts  # Spot Ticker WebSocket istemcisi ve stream yayıncısı
+│   │   │   │   └── binance-spot.types.ts
+│   │   │   ├── futures/            # Vadeli İşlemler Verileri (Planlandı P1)
+│   │   │   │   ├── binance-futures.service.ts # Mark Price, Funding, OI (WS/REST) istemcisi
+│   │   │   │   └── binance-futures.types.ts
+│   │   │   └── binance.module.ts     # Binance Spot/Futures servislerini birleştirir
+│   │   │
+│   │   ├── bybit/                  # Bybit Entegrasyonu (Planlandı P2)
+│   │   │   ├── spot/
+│   │   │   ├── futures/
+│   │   │   └── bybit.module.ts
+│   │   │
+│   │   ├── hyperliquid/            # HyperLiquid Entegrasyonu (Planlandı P2)
+│   │   │   ├── spot/               # Veya ilgili piyasa tipi
+│   │   │   ├── futures/            # Veya ilgili piyasa tipi
+│   │   │   └── hyperliquid.module.ts
+│   │   │
+│   │   └── coingecko/              # CoinGecko Entegrasyonu (Mevcut coin-info yerine)
+│   │       ├── coingecko.service.ts  # Coin detaylarını çeker ve cache'ler
+│   │       ├── coingecko.controller.ts # /coins/:symbol/details endpoint'i
+│   │       └── coingecko.module.ts
+│   │
+│   ├── processing/                 # Veri işleme, birleştirme ve önbelleğe alma
+│   │   └── cache-update/           # (Mevcut modül, buraya taşındı/gruplandı)
+│   │       ├── cache-update.service.ts # data-sources'dan gelen stream'lere abone olur,
+│   │       │                         # sembolleri temizler, ProcessedTicker'a dönüştürür,
+│   │       │                         # önceliklendirir (ileride), in-memory ve Redis cache'i günceller,
+│   │       │                         # birleştirilmiş stream'i yayınlar.
+│   │       ├── cache-update.module.ts
+│   │       └── cache-update.types.ts # Standart ProcessedTicker formatı tanımı
+│   │
+│   ├── distribution/               # İşlenmiş veriyi istemcilere dağıtma
+│   │   └── events/                 # (Mevcut modül, buraya taşındı/gruplandı)
+│   │       ├── events.controller.ts # SSE endpoint (/events/ticker), cache-update'den gelen stream'e abone olur
+│   │       └── events.module.ts
+│   │
+│   └── features/                   # Uygulamanın belirli işlevsel özellikleri
+│       ├── technical-analysis/     # (Mevcut modül, buraya taşındı/gruplandı)
+│       │   ├── services/           # İndikatör, pivot vb. hesaplama servisleri
+│       │   ├── types/              # TA özel tipleri
+│       │   ├── technical-analysis.controller.ts # TA endpoint'leri (gerekirse)
+│       │   ├── technical-analysis.service.ts
+│       │   └── technical-analysis.module.ts
+│       │
+│       └── alerts/                 # Kullanıcı Fiyat Alarmları (Planlandı P1)
+│           ├── alerts.service.ts
+│           ├── alerts.controller.ts
+│           └── alerts.module.ts
+│
+├── test/                           # End-to-end testler
+│   └── app.e2e-spec.ts
+│
+├── .env                            # Ortam değişkenleri (Redis URL vb.)
+├── .gitignore
+├── nest-cli.json
+├── package.json
+├── README.md
+├── tsconfig.build.json
+└── tsconfig.json
+
+--- 

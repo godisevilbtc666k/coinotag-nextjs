@@ -1,0 +1,423 @@
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { HttpService } from '@nestjs/axios';
+import * as WebSocket from 'ws';
+import { Subject, Subscription, firstValueFrom } from 'rxjs';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
+import { Interval } from '@nestjs/schedule';
+import {
+  BinanceFuturesFundingRate,
+  BinanceFuturesOpenInterest,
+  BinanceFuturesTicker,
+} from './binance-futures.types';
+import { WsConnectionStatus } from '../../../common/types/connection-status.types';
+import axios, { AxiosError, AxiosResponse } from 'axios';
+
+@Injectable()
+export class BinanceFuturesService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(BinanceFuturesService.name);
+  private readonly futuresWsUrl = 'wss://fstream.binance.com';
+  private tickerWs: WebSocket.WebSocket | null = null;
+
+  private tickerConnectionState: WsConnectionStatus = 'disconnected';
+
+  // Subjects for data streams
+  private futuresTickerSubject = new Subject<BinanceFuturesTicker[]>();
+  private fundingRateSubject = new Subject<BinanceFuturesFundingRate[]>();
+  private openInterestSubject = new Subject<BinanceFuturesOpenInterest[]>();
+
+  // Public Observables
+  public futuresTickerStream$ = this.futuresTickerSubject.asObservable();
+  public fundingRateStream$ = this.fundingRateSubject.asObservable();
+  public openInterestStream$ = this.openInterestSubject.asObservable();
+
+  private readonly fundingOiFetchIntervalMs = 60 * 1000; // Interval süresi (kullanılmayacak ama referans olabilir)
+  private symbolsToFetchOi: string[] = []; // OI çekilecek semboller
+  private initialSymbolsReceived = false; // YENİ: İlk sembol listesi alındı mı?
+
+  private subscribedSymbols = new Set<string>(); // Takip edilen semboller
+  private fundingUpdateInterval: NodeJS.Timeout | null = null;
+  private readonly restBaseUrl = 'https://fapi.binance.com'; // Futures API base URL
+
+  constructor(
+    private configService: ConfigService,
+    private httpService: HttpService,
+    private eventEmitter: EventEmitter2,
+  ) {}
+
+  onModuleInit() {
+    this.logger.log('####### BinanceFuturesService onModuleInit CALLED #######');
+    this.logger.log('Initializing Binance Futures Service...');
+    this.connectTickerStream();
+    this.listenForSymbolUpdates(); // Event listener'ı başlat
+  }
+
+  onModuleDestroy() {
+    this.logger.log('Closing Binance Futures Service connections and intervals...');
+    this.tickerWs?.terminate();
+    if (this.fundingUpdateInterval) {
+      clearInterval(this.fundingUpdateInterval);
+      this.logger.log('Cleared Funding/OI fetch interval.');
+    }
+    this.eventEmitter.removeAllListeners('cache.symbols.updated');
+  }
+
+  // --- Connection Methods ---
+  private connectTickerStream() {
+    const url = `${this.futuresWsUrl}/ws/!ticker@arr`;
+    this.tickerWs = this.connectWebSocket(
+      url,
+      'Futures Ticker',
+      this.tickerConnectionState,
+      this.handleTickerMessage.bind(this),
+      this.handleTickerClose.bind(this)
+    );
+  }
+
+  private connectWebSocket(url: string, streamName: string, connectionState: WsConnectionStatus, onMessage: (data: WebSocket.RawData) => void, onClose: (url: string) => void): WebSocket.WebSocket | null {
+    let wsInstance: WebSocket.WebSocket | null = null;
+    if (streamName === 'Futures Ticker') wsInstance = this.tickerWs;
+
+    if (wsInstance || connectionState === 'connecting') {
+      this.logger.warn(`[${streamName} WS] Connection attempt skipped, already exists or connecting.`);
+      return null;
+    }
+
+    if (streamName === 'Futures Ticker') this.tickerConnectionState = 'connecting';
+
+    this.logger.log(`[${streamName} WS] Attempting to connect to ${url}...`);
+
+    try {
+      const ws = new WebSocket(url);
+
+      ws.on('open', () => {
+        this.logger.log(`[${streamName} WS] Connection established.`);
+        if (streamName === 'Futures Ticker') this.tickerConnectionState = 'connected';
+        this.clearFuturesTickerConnectionAttemptInterval();
+      });
+
+      ws.on('message', onMessage);
+      ws.on('error', (error: Error) => {
+        this.logger.error(`[${streamName} WS] Error:`, error);
+        if (streamName === 'Futures Ticker') this.handleFuturesTickerDisconnect();
+      });
+      ws.on('close', (code: number, reason: Buffer) => {
+        this.logger.warn(`[${streamName} WS] Closed. Code: ${code}, Reason: ${reason.toString()}.`);
+        if (streamName === 'Futures Ticker') this.handleFuturesTickerDisconnect();
+      });
+
+      return ws;
+    } catch (error) {
+      this.logger.error(`[${streamName} WS] Connection failed:`, error);
+      if (streamName === 'Futures Ticker') this.tickerConnectionState = 'error';
+      return null;
+    }
+  }
+
+  private handleTickerMessage(data: WebSocket.RawData) {
+    try {
+      const message = JSON.parse(data.toString());
+      if (Array.isArray(message) && message.length > 0 && message[0].e === '24hrTicker') {
+        const filteredMessage = message.filter((item: any) => item.s && item.s.endsWith('USDT'));
+        if (filteredMessage.length > 0) {
+          this.futuresTickerSubject.next(filteredMessage as BinanceFuturesTicker[]);
+        }
+      } else {
+        this.logger.debug('[Futures Ticker WS] Received non-ticker array or unknown message type:', message);
+      }
+    } catch (error) {
+      this.logger.error('[Futures Ticker WS] Error parsing message:', error);
+    }
+  }
+
+  private handleTickerClose(url: string) {
+    this.logger.warn(`[Futures Ticker WS] Connection closed for ${url}.`);
+    this.handleFuturesTickerDisconnect();
+  }
+
+  private handleFuturesTickerDisconnect() {
+    this.tickerConnectionState = 'disconnected';
+    this.closeFuturesTickerConnection(false);
+    this.scheduleFuturesTickerReconnection();
+  }
+
+  private futuresTickerConnectionAttemptInterval: NodeJS.Timeout | null = null;
+  private scheduleFuturesTickerReconnection() {
+    this.clearFuturesTickerConnectionAttemptInterval();
+    if (this.tickerConnectionState === 'connecting' || this.tickerWs) return;
+    const reconnectDelay = 5000;
+    this.logger.log(`[Futures Ticker WS] Scheduling reconnection in ${reconnectDelay / 1000}s...`);
+    this.futuresTickerConnectionAttemptInterval = setTimeout(() => {
+      this.futuresTickerConnectionAttemptInterval = null;
+      this.logger.log('[Futures Ticker WS] Attempting reconnect now...');
+      this.connectTickerStream();
+    }, reconnectDelay);
+  }
+
+  private clearFuturesTickerConnectionAttemptInterval() {
+    if (this.futuresTickerConnectionAttemptInterval) {
+      clearTimeout(this.futuresTickerConnectionAttemptInterval);
+      this.futuresTickerConnectionAttemptInterval = null;
+      this.logger.log('[Futures Ticker WS] Cleared pending reconnection attempt.');
+    }
+  }
+
+  private closeFuturesTickerConnection(log = true) {
+    this.clearFuturesTickerConnectionAttemptInterval();
+    if (this.tickerWs) {
+      if (log) this.logger.log('[Futures Ticker WS] Closing connection.');
+      this.tickerWs.removeAllListeners();
+      this.tickerWs.terminate();
+      this.tickerWs = null;
+      this.tickerConnectionState = 'disconnected';
+    }
+  }
+
+  // --- Funding Rate & Open Interest Fetching (REST) --- //
+
+  @Interval(60000) // 60 saniyede bir çalıştır
+  async handleFundingOiInterval() {
+    if (!this.initialSymbolsReceived) {
+        this.logger.debug('[Funding/OI Interval] Skipping fetch, initial symbols not yet received.');
+        return;
+    }
+    try {
+        await this.fetchFundingRatesAndOi();
+    } catch (error) {
+        this.logger.error('####### Uncaught error inside handleFundingOiInterval #######', error);
+    }
+  }
+
+  private async fetchFundingRatesAndOi() {
+    if (!this.symbolsToFetchOi || this.symbolsToFetchOi.length === 0) {
+        this.logger.warn('[fetchFundingRatesAndOi] Symbol list empty, skipping Open Interest fetch.');
+        const fundingRates = await this.fetchFundingRates();
+        if (fundingRates && fundingRates.length > 0) {
+            this.fundingRateSubject.next(fundingRates);
+            this.logger.debug(`Fetched and published ${fundingRates.length} funding rates.`);
+        } else {
+            this.logger.warn('####### No funding rates returned from fetchFundingRates to publish #######');
+        }
+        return;
+    }
+
+    try {
+        const [fundingRates, openInterests] = await Promise.all([
+            this.fetchFundingRates(),
+            this.fetchAllOpenInterest()
+        ]);
+
+        if (fundingRates && fundingRates.length > 0) {
+            this.fundingRateSubject.next(fundingRates);
+            this.logger.debug(`Fetched and published ${fundingRates.length} funding rates. Sample Symbol: ${fundingRates[0]?.symbol}`);
+        } else {
+            this.logger.warn('####### No funding rates returned from fetchFundingRates to publish #######');
+        }
+        if (openInterests && openInterests.length > 0) {
+            this.logger.debug(`Fetched and published ${openInterests.length} open interest data points. Sample Symbol: ${openInterests[0]?.symbol}`);
+            this.openInterestSubject.next(openInterests);
+        } else {
+             this.logger.warn('####### No open interests returned from fetchAllOpenInterest to publish #######');
+        }
+
+    } catch (error) {
+        this.logger.error('####### ERROR in fetchFundingRatesAndOi catch block #######', error);
+    }
+}
+
+  // Tüm Funding Rate verilerini çek (Endpoint /premiumIndex olarak değiştirildi)
+  private async fetchFundingRates(): Promise<BinanceFuturesFundingRate[] | null> {
+    const endpoint = `${this.restBaseUrl}/fapi/v1/premiumIndex`; // Endpoint değiştirildi
+    this.logger.verbose(`[REST Request FR] Fetching all funding rates from ${endpoint}`);
+    try {
+      const response = await firstValueFrom(
+        // Dönen tip artık farklı olabilir, any[] kullanıp manuel parse edelim
+        this.httpService.get<any[]>(endpoint, { 
+          timeout: 10000 // 10 saniye timeout
+        }),
+      );
+      if (response.status === 200 && Array.isArray(response.data)) {
+         const now = Date.now(); // Zaman damgası için
+         const fundingRates: BinanceFuturesFundingRate[] = [];
+
+         for (const item of response.data) {
+             if (item.symbol && item.symbol.endsWith('USDT') && item.lastFundingRate) {
+                // BinanceFuturesFundingRate formatına dönüştür
+                 fundingRates.push({
+                    symbol: item.symbol,
+                    fundingRate: item.lastFundingRate, // Doğru alanı kullan
+                    fundingTime: item.nextFundingTime || now, // Varsa nextFundingTime, yoksa şimdiki zaman
+                    markPrice: item.markPrice // Mark price da geliyor, onu da alalım (opsiyonel)
+                 });
+             }
+         }
+
+        const btcRateEntry = fundingRates.find(item => item.symbol === 'BTCUSDT');
+        if (btcRateEntry) {
+            this.logger.verbose(`[FR Fetch] BTCUSDT found in raw response from ${endpoint}. Rate: ${btcRateEntry.fundingRate}`);
+        } else {
+            // /premiumIndex her zaman tüm çiftleri dönmeyebilir, bu artık bir hata değil, uyarı olabilir.
+            this.logger.warn(`[FR Fetch] BTCUSDT NOT found in raw response from ${endpoint}. This might be normal if index is not available.`); 
+        }
+
+        this.logger.verbose(`[REST Response FR] fetchFundingRates received ${response.data.length} raw, processed ${fundingRates.length} USDT pairs from ${endpoint}.`);
+        return fundingRates.length > 0 ? fundingRates : null;
+      } else {
+        this.logger.error(`Failed to fetch funding rates from ${endpoint}. Status: ${response.status}, Data: ${JSON.stringify(response.data)}`);
+        return null;
+      }
+    } catch (error) {
+      this.logRestError('fetchFundingRates', endpoint, error);
+      return null;
+    }
+  }
+
+  // Tüm Open Interest verilerini çek (Doğru Yöntem: Sembolleri tek tek çek)
+  private async fetchAllOpenInterest(): Promise<BinanceFuturesOpenInterest[] | null> {
+    this.logger.verbose(`[OI Fetch] Starting to fetch OI for ${this.symbolsToFetchOi.length} symbols (limit 150).`);
+    
+    const symbolsToFetch = this.symbolsToFetchOi;
+    
+    if (!symbolsToFetch || symbolsToFetch.length === 0) {
+        this.logger.warn('[OI Fetch] Symbol list for OI fetching is empty. Waiting for cache.symbols.updated event.');
+        return null;
+    }
+    
+    // Rate limit yememek için sadece ilk 150 coini alalım (Gerekirse bu sayı ayarlanabilir)
+    const limitedSymbols = symbolsToFetch
+        .filter(s => s && !s.startsWith('1000')) // 1000* ile başlayanları filtrele (varsa)
+        .slice(0, 150);
+        
+    this.logger.verbose(`[OI Fetch] Attempting to fetch OI for ${limitedSymbols.length} symbols.`);
+
+    // --- YENİ: Meme coin listesi (Bybit'teki ile aynı) --- 
+    const memeCoinsWithPrefix = new Set(['BONK', 'CAT', 'CHEEMS', 'FLOKI', 'LUNC', 'PEPE', 'RATS', 'SATS', 'WHY', 'X', 'XEC', 'SHIB']); 
+
+    // Promise.allSettled kullanarak tüm istekleri gönder ve sonuçları bekle
+    const promises = limitedSymbols.map(cleanedSymbol => {
+        // --- FIX: Append 'USDT' and handle memecoin prefix ---
+        let symbolToSend = cleanedSymbol;
+        
+        // MOG için özel durum (1000000 prefix)
+        if (cleanedSymbol === 'MOG') {
+            symbolToSend = `1000000${cleanedSymbol}`;
+            this.logger.verbose(`[OI Fetch Memecoin] Added 1000000 prefix for ${cleanedSymbol}`);
+        } else if (memeCoinsWithPrefix.has(cleanedSymbol)) {
+            symbolToSend = `1000${cleanedSymbol}`; // Prefix ekle
+            this.logger.verbose(`[OI Fetch Memecoin] Added 1000 prefix for ${cleanedSymbol}`);
+        }
+        const symbolWithSuffix = `${symbolToSend}USDT`; // Sonra USDT ekle
+        // --- END FIX ---
+        
+        // Tekil çekme fonksiyonunu doğru sembolle çağır
+        return this.fetchOpenInterestForSymbol(symbolWithSuffix); 
+    });
+    const settledResults = await Promise.allSettled(promises);
+
+    const results: BinanceFuturesOpenInterest[] = [];
+    let successCount = 0;
+    let errorCount = 0;
+    let skippedCount = 0;
+
+    settledResults.forEach((result, index) => {
+        // Loglama için hangi sembolün istendiğini (prefixli veya prefixsiz) bilelim
+        let symbolRequested = `${limitedSymbols[index]}USDT`;
+        if (limitedSymbols[index] === 'MOG') {
+            symbolRequested = `1000000${symbolRequested}`;
+        } else if (memeCoinsWithPrefix.has(limitedSymbols[index])) {
+            symbolRequested = `1000${symbolRequested}`;
+        }
+        // --- Loglama için düzeltme sonu ---
+        
+        if (result.status === 'fulfilled') {
+            if (result.value) {
+                results.push(result.value); 
+                successCount++;
+            } else {
+                skippedCount++;
+            }
+        } else if (result.status === 'rejected') {
+            errorCount++;
+        }
+    });
+
+    // Loglamada kullanılan sembolü düzeltelim
+    this.logger.verbose(`[OI Fetch] Finished fetching OI. Success: ${successCount}, Skipped (Invalid Symbol/-4108): ${skippedCount}, Failed (Other Errors): ${errorCount}. Total results: ${results.length}`);
+
+    return results.length > 0 ? results : null;
+  }
+
+  // Belirli bir sembol için Open Interest verisini çek
+  private async fetchOpenInterestForSymbol(symbolWithSuffix: string): Promise<BinanceFuturesOpenInterest | null> {
+    // Endpoint artık /fapi/v1/openInterest ve sembol suffix içermeli (örn: BTCUSDT)
+    const url = `${this.restBaseUrl}/fapi/v1/openInterest?symbol=${symbolWithSuffix}`;
+    this.logger.verbose(`[REST Request OI Single] Fetching OI for ${symbolWithSuffix} from ${url}`);
+    try {
+      // Dönen tip: { symbol: string, openInterest: string, time: number }
+      const response = await firstValueFrom(
+        this.httpService.get<{ symbol: string, openInterest: string, time: number }>(url, {
+            timeout: 15000 // Daha kısa timeout (5sn)
+        })
+      );
+      if (response.status === 200 && response.data && response.data.openInterest) {
+        this.logger.verbose(`[REST Response OI Single] Success for ${symbolWithSuffix}. OI: ${response.data.openInterest}`);
+        // Dönen veriyi BinanceFuturesOpenInterest formatına dönüştür (zaten uyumlu)
+        return {
+            symbol: response.data.symbol, // Binance sembolünü (örn: BTCUSDT) kullan
+            openInterest: response.data.openInterest, // Zaten string
+            time: response.data.time
+        };
+      } else {
+        // Normalde 200 ama data yoksa veya openInterest yoksa buraya düşebilir
+        this.logger.warn(`[OI Fetch Single Warn] Received 200 but no valid data for ${symbolWithSuffix}. Status: ${response.status}, Data: ${JSON.stringify(response.data)}`);
+        return null;
+      }
+    } catch (error) {
+      // ÖZEL HATA YAKALAMA: Invalid Symbol (-1121)
+      if (axios.isAxiosError(error) && error.response?.status === 400 && error.response?.data?.code === -1121) {
+          this.logger.verbose(`[OI Fetch Single Skip] Invalid symbol for Futures OI: ${symbolWithSuffix}. Skipping.`);
+      // --- YENİ: -4108 Hata Kodu için DEBUG log --- 
+      } else if (axios.isAxiosError(error) && error.response?.status === 400 && error.response?.data?.code === -4108) {
+          this.logger.verbose(`[OI Fetch Single Skip] Symbol ${symbolWithSuffix} in delivery/settlement/closed state (Code: -4108). Skipping OI fetch.`);
+      // --- BİTTİ: -4108 Hata Kodu için DEBUG log --- 
+      } else {
+          // Diğer hataları ERROR olarak logla
+          this.logRestError('fetchOpenInterestForSymbol', url, error, symbolWithSuffix);
+      }
+      return null;
+    }
+  }
+
+  private logRestError(context: string, url: string, error: any, symbol?: string) {
+    if (error instanceof AxiosError) {
+      this.logger.error(
+        `Axios Error in ${context} calling ${url}: Status ${error.response?.status}, Data: ${JSON.stringify(error.response?.data)}`,
+        error.stack,
+      );
+    } else {
+      this.logger.error(`Error in ${context} calling ${url}:`, error);
+    }
+  }
+
+  @OnEvent('cache.symbols.updated')
+  handleCacheSymbolsUpdate(symbols: string[]) {
+      this.logger.log(`[Event Received] cache.symbols.updated with ${symbols.length} symbols.`);
+      if (symbols.length > 0) {
+          this.logger.verbose(`First few symbols: ${symbols.slice(0, 5).join(', ')}`);
+      }
+      const previousSymbolCount = this.symbolsToFetchOi.length;
+      this.symbolsToFetchOi = symbols; // Sembol listesini güncelle
+      
+      if (!this.initialSymbolsReceived && symbols.length > 0) {
+          this.initialSymbolsReceived = true;
+          this.logger.log('####### Initial symbols received! Triggering first Funding/OI fetch. #######');
+          setTimeout(() => {
+              this.fetchFundingRatesAndOi();
+          }, 2000); // 2 saniye bekle
+      }
+  }
+
+  private listenForSymbolUpdates() {
+    this.eventEmitter.on('cache.symbols.updated', this.handleCacheSymbolsUpdate.bind(this));
+  }
+} 

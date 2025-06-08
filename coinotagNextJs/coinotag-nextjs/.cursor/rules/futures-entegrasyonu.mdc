@@ -1,0 +1,795 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Futures Sayfası (`futures/[symbol]`) İçin Yapılacak Değişiklikler Listesi
+
+## 1. `@/services/futures_binanceService.ts` (veya ilgili servis dosyası)
+
+```typescript
+// --- YENİ FONKSİYONLAR veya GÜNCELLEMELER ---
+
+// Futures Ticker Verisi İçin (Örnek Adlandırma)
+async function getCryptoFuturesDataBySymbol(symbol: string): Promise<CryptoFuturesData | null> {
+  // Binance Futures API (/fapi/v1/ticker/24hr, /fapi/v1/ticker/price, /fapi/v1/premiumIndex vb.) çağır
+  // Gerekli verileri (fiyat, değişim, hacim, high, low, funding rate, open interest) işle ve döndür
+  // Cache mekanizmasını kullan (spot'tan ayrı veya birleşik)
+}
+
+// Futures Kline Verisi İçin (Örnek Adlandırma)
+async function fetchFuturesKlineData(symbol: string, interval: string): Promise<Kline[]> {
+  // Binance Futures API (/fapi/v1/klines veya /fapi/v1/continuousKlines) çağır
+  // Kline verisini işle ve döndür
+}
+
+// Toplu Futures Verisi Güncelleme (Örnek Adlandırma)
+async function forceFetchAllFuturesData() {
+  // Tüm desteklenen futures pariteleri için ticker verilerini çek/güncelle
+  // Cache'i güncelle
+}
+
+// --- MEVCUT FONKSİYON GÜNCELLEMELERİ (Eğer Ortak Kullanılıyorsa) ---
+
+// Mevcut `getCryptoDataBySymbol` fonksiyonuna marketType parametresi ekle
+async function getCryptoDataBySymbol(symbol: string, marketType: 'spot' | 'futures' = 'spot'): Promise<CryptoData | CryptoFuturesData | null> {
+  // marketType'a göre ilgili API endpoint'ini veya cache'i kullan
+}
+
+// Mevcut `fetchKlineData` fonksiyonuna marketType parametresi ekle
+async function fetchKlineData(symbol: string, interval: string, marketType: 'spot' | 'futures' = 'spot'): Promise<Kline[]> {
+  // marketType'a göre ilgili API endpoint'ini kullan
+}
+
+// Mevcut `forceFetchAllData` fonksiyonunu hem spot hem futures içerecek şekilde güncelle
+async function forceFetchAllData() {
+ // Spot verilerini güncelle
+ // Futures verilerini güncelle (forceFetchAllFuturesData çağırabilir)
+}
+
+// --- VERİ TİPLERİ ---
+
+// Gerekirse Futures için ayrı bir veri tipi tanımla
+interface CryptoFuturesData {
+  symbol: string;
+  price: number; // Mark Price veya Last Price
+  priceChangePercent: number; // Vadeliye göre 24s değişim
+  volume: number; // Vadeli işlem hacmi (genellikle quote asset cinsinden)
+  high: number; // Vadeli 24s High
+  low: number;  // Vadeli 24s Low
+  fundingRate: number; // Funding Rate
+  openInterest: number; // Open Interest (USD)
+  // ... diğer vadeliye özel alanlar (next funding time vb.)
+  lastUpdated?: Date;
+  // CoinGecko'dan gelen spot marketCap vb. burada olmayabilir
+}
+
+// Kline tipi futures verisine uygun olmalı
+interface Kline {
+  openTime: number;
+  open: string; // veya number
+  high: string; // veya number
+  low: string; // veya number
+  close: string; // veya number
+  volume: string; // Base asset volume
+  closeTime: number;
+  quoteAssetVolume: string; // Quote asset volume (futures için daha anlamlı olabilir)
+  numberOfTrades: number;
+  // ... diğer kline alanları
+}
+
+// --- HESAPLAMALAR ---
+// calculateIndicators, calculatePivotPoints vb. fonksiyonların futures Kline[] verisini kabul ettiğinden emin ol.
+```
+
+## 2. `coinotag/src/app/kripto-paralar/futures/[symbol]/page.tsx`
+
+```diff
+import { Metadata } from 'next'
+import { notFound } from 'next/navigation'
+import { Suspense } from 'react'
+import { CoinDetailSkeleton } from '../../components/CoinDetailSkeleton'
+import CoinDetailClient from './CoinDetailClient'
+// Servis importları (futures versiyonları veya parametreli halleri kullanılacak)
+import {
+-  getCryptoDataBySymbol,
+-  forceFetchAllData,
++  getCryptoFuturesDataBySymbol, // VEYA getCryptoDataBySymbol(..., 'futures')
++  forceFetchAllFuturesData,    // VEYA forceFetchAllData() (eğer futures içeriyorsa)
+  CryptoData, // Veya CryptoFuturesData
+  fetchFundingRates
+} from '@/services/binanceService'
+import { getCoinDetails, CoinGeckoInfo } from '@/services/coinInfoService'
+-import { formatCurrency, formatPercent, formatMarketCap, formatVolumeWithShorthand } from '@/lib/utils'
++import { formatCurrency, formatPercent, formatVolumeWithShorthand } from '@/lib/utils' // formatMarketCap kaldırıldı/azaltıldı
+import { ArrowUpIcon, ArrowDownIcon, ChevronLeft, Star, Bell, Share2, BarChart3, FileText, Info, TrendingUp, Zap } from 'lucide-react'
+import Link from 'next/link'
+import { Badge } from '@/components/ui/badge'
+import CoinImage from './components/CoinImage'
+import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
+import RealtimeNewsFeed from './components/RealtimeNewsFeed'
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+
+type Props = {
+  params: {
+    symbol: string
+  }
+}
+
+// Bu fonksiyon futures verisi döndürmeli
+async function getInitialCoinDataFromCache(symbol: string): Promise<CryptoFuturesData | null> {
+  // console.log(`[Server] ${symbol} futures için cache kontrol ediliyor...`);
+- return getCryptoDataBySymbol(symbol.toUpperCase());
++ return getCryptoFuturesDataBySymbol(symbol.toUpperCase()); // Futures versiyonu
+}
+
+// formatFullCurrency aynı kalabilir
+
+export async function generateMetadata({ params }: Props): Promise<Metadata> {
+  const resolvedParams = await params;
+  const symbol = resolvedParams.symbol.toUpperCase();
+- let coinData: CryptoData | null = null;
++ let coinData: CryptoFuturesData | null = null; // Futures tipi
+  let coinGeckoData: CoinGeckoInfo | null = null;
+
+  try {
+    [coinData, coinGeckoData] = await Promise.all([
+      (async () => {
+-       let data = getCryptoDataBySymbol(symbol);
++       let data = getCryptoFuturesDataBySymbol(symbol); // Futures versiyonu
+        if (!data) {
+-         // console.warn(`[Metadata] ${symbol} Binance cache'de bulunamadı, API'den çekiliyor...`);
++         // console.warn(`[Metadata] ${symbol} Futures cache'de bulunamadı, API'den çekiliyor...`);
+-         await forceFetchAllData();
++         await forceFetchAllFuturesData(); // Futures versiyonu
+-         data = getCryptoDataBySymbol(symbol);
++         data = getCryptoFuturesDataBySymbol(symbol); // Futures versiyonu
+        }
+        return data;
+      })(),
+      getCoinDetails(symbol) // CoinGecko aynı kalabilir
+    ]);
+  } catch (error) {
+    // console.error(`[Metadata] ${symbol} için veri çekilirken hata:`, error);
+  }
+
+- const title = coinData
+-   ? `${symbol} Fiyatı: ${formatCurrency(coinData.price)} | ${symbol}/USDT Grafiği ve Analizi`
+-   : `${symbol} Kripto Para Detayları | COINOTAG`;
++ const title = coinData
++   ? `${symbol} Vadeli Fiyatı: ${formatCurrency(coinData.price)} | ${symbol}/USDT Vadeli İşlem Grafiği ve Analizi` // Güncellendi
++   : `${symbol} Vadeli İşlem Detayları | COINOTAG`; // Güncellendi
+
+  const descriptionFromGecko = coinGeckoData?.description?.tr || coinGeckoData?.description?.en || '';
+  const shortDescription = descriptionFromGecko.length > 155
+    ? descriptionFromGecko.substring(0, 155) + '...'
+    : descriptionFromGecko;
+
+- const description = coinData
+-   ? `${symbol} (${symbol}/USDT) anlık fiyatı: ${formatCurrency(coinData.price)}. ${shortDescription || 'Canlı TradingView grafiği, piyasa değeri, hacim, funding rate ve açık pozisyon (OI) verileri. Detaylı bilgi ve teknik analiz.'}`
+-   : `${symbol} kripto parasına ait detaylı bilgilere, canlı grafiklere ve piyasa verilerine ulaşın.`;
++ const description = coinData
++   ? `${symbol} (${symbol}/USDT Vadeli) anlık fiyatı: ${formatCurrency(coinData.price)}. ${shortDescription || 'Canlı TradingView vadeli işlem grafiği, hacim, funding rate ve açık pozisyon (OI) verileri. Detaylı bilgi ve teknik analiz.'}` // Güncellendi (piyasa değeri kaldırıldı)
++   : `${symbol} vadeli işlem paritesine ait detaylı bilgilere, canlı grafiklere ve piyasa verilerine ulaşın.`; // Güncellendi
+
+  return {
+    title,
+    description,
+-   keywords: `${symbol}, ${coinGeckoData?.name || symbol}, ${symbol} fiyat, ${symbol} grafik, ${symbol} USDT, ${symbol} teknik analiz, ${symbol} piyasa değeri, kripto para, coinotag, funding rate, açık pozisyon, OI, ${coinGeckoData?.categories?.join(', ') || ''}`,
++   keywords: `${symbol}, ${coinGeckoData?.name || symbol}, ${symbol} vadeli fiyat, ${symbol} futures, ${symbol} vadeli işlem grafik, ${symbol} USDT vadeli, ${symbol} teknik analiz, kripto para, coinotag, funding rate, açık pozisyon, OI, ${coinGeckoData?.categories?.join(', ') || ''}`, // Güncellendi (piyasa değeri kaldırıldı)
+    openGraph: {
+      title,
+      description,
+      images: [
+        {
+          url: coinGeckoData?.image?.large || `/og/coin/${symbol.toLowerCase()}.png`,
+          width: 1200,
+          height: 630,
+-         alt: `${symbol} Fiyat Grafiği ve Bilgileri`,
++         alt: `${symbol} Vadeli Fiyat Grafiği ve Bilgileri`, // Güncellendi
+        },
+      ],
+    },
+    twitter: {
+       card: 'summary_large_image',
+       title,
+       description,
+       images: [coinGeckoData?.image?.large || `/og/coin/${symbol.toLowerCase()}.png`],
+    },
+  }
+}
+
+export default async function CoinDetailPage({ params }: Props) {
+  const resolvedParams = await params;
+  const symbol = resolvedParams.symbol.toUpperCase();
+- let initialCoinData: CryptoData | null = null;
++ let initialCoinData: CryptoFuturesData | null = null; // Futures tipi
+  let coinGeckoData: CoinGeckoInfo | null = null;
+
+- // console.log(`[Server] ${symbol} sayfası için veri hazırlanıyor...`);
++ // console.log(`[Server] ${symbol} FUTURES sayfası için veri hazırlanıyor...`); // Log güncellendi
+
+  try {
+    [initialCoinData, coinGeckoData] = await Promise.all([
+      (async () => {
+-       let data = getCryptoDataBySymbol(symbol);
++       let data = getCryptoFuturesDataBySymbol(symbol); // Futures versiyonu
+        if (!data || data.fundingRate === undefined || data.openInterest === undefined) {
+-         // console.warn(`[Server] ${symbol} Binance cache'de bulunamadı veya eksik, API'den ZORLA çekiliyor...`);
++         // console.warn(`[Server] ${symbol} Futures cache'de bulunamadı veya eksik, API'den ZORLA çekiliyor...`); // Log güncellendi
+-         await forceFetchAllData();
++         await forceFetchAllFuturesData(); // Futures versiyonu
+-         data = getCryptoDataBySymbol(symbol);
++         data = getCryptoFuturesDataBySymbol(symbol); // Futures versiyonu
+          if (!data) {
+-           // console.error(`[Server] ${symbol} Binance API'den çekildikten sonra bile bulunamadı!`);
++           // console.error(`[Server] ${symbol} Futures API'den çekildikten sonra bile bulunamadı!`); // Log güncellendi
+          }
+        }
+        return data;
+      })(),
+      getCoinDetails(symbol)
+    ]);
+
+-    if (initialCoinData) { // console.log(`[Server] ${symbol} Binance verisi hazır.`); }
++    if (initialCoinData) { // console.log(`[Server] ${symbol} Futures verisi hazır.`); } // Log güncellendi
+     if (coinGeckoData) { // console.log(`[Server] ${symbol} CoinGecko verisi hazır.`); }
+     else { // console.warn(`[Server] ${symbol} için CoinGecko verisi bulunamadı.`); }
+
+  } catch (error) {
+    // console.error(`[Server] ${symbol} için veri çekilirken KRİTİK HATA:`, error);
+  }
+
+  // Hesaplamalar
+- const fundingRateValue = initialCoinData?.fundingRates?.avgFunding ?? initialCoinData?.fundingRate ?? 0;
++ const fundingRateValue = initialCoinData?.fundingRate ?? 0; // Direkt fundingRate kullanılabilir (varsa)
+  const fundingRateColor = fundingRateValue > 0.0002 ? 'text-green-500' : fundingRateValue < -0.0002 ? 'text-red-500' : '';
+- const marketCapFromGecko = coinGeckoData?.market_data?.market_cap?.usd; // Futures'ta genellikle gösterilmez
+- const fdvFromGecko = coinGeckoData?.market_data?.fully_diluted_valuation?.usd; // Futures'ta genellikle gösterilmez
+- const marketCapRank = coinGeckoData?.market_data?.market_cap_rank; // Futures'ta genellikle gösterilmez
+
+  return (
+    <div className="w-full px-4 md:px-6 lg:px-8 py-6">
+      {/* ... (Mobil Navigasyon kaldırıldı) ... */}
+      <div className="mt-0 md:mt-0" id="coin-detail-header">
+        <div className="flex flex-col gap-2 md:gap-4 mb-3">
+          {/* Breadcrumb */}
+          <div className="w-full order-1">
+-           <Link href="/kripto-paralar" className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground transition-colors">
+-             <ChevronLeft className="h-4 w-4 mr-1" />
+-             Kripto Paralar
++           {/* "/kripto-paralar/futures" veya sadece "/kripto-paralar" olabilir */}
++           <Link href="/kripto-paralar/futures" className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground transition-colors">
++             <ChevronLeft className="h-4 w-4 mr-1" />
++             Vadeli İşlemler
+            </Link>
+          </div>
+
+          {/* Coin Adı/Logo ve Aksiyonlar */}
+          <div className="flex justify-between items-center w-full order-2">
+            <div className="flex items-center">
+              <div className="relative w-8 h-8 mr-2 flex-shrink-0">
+                {/* CoinImage aynı kalabilir */}
+                <CoinImage symbol={symbol} alt={coinGeckoData?.name || symbol} width={32} height={32} className="rounded-full" />
+              </div>
+              <h1 className="text-2xl md:text-3xl font-bold mr-2 whitespace-nowrap">{coinGeckoData?.name || symbol}</h1>
+-             <Badge variant="secondary" className="text-xs">{symbol}/USDT</Badge>
++             <Badge variant="secondary" className="text-xs">{symbol}/USDT Vadeli</Badge> {/* Güncellendi */}
+            </div>
+            {/* Aksiyon Butonları aynı kalabilir */}
+            <div className="flex items-center gap-1.5 md:gap-2">
+              <Button variant="outline" size="icon" className="h-8 w-8 md:h-9 md:w-9"><Star className="h-4 w-4" /></Button>
+              <Button variant="outline" size="icon" className="h-8 w-8 md:h-9 md:w-9"><Bell className="h-4 w-4" /></Button>
+              <Button variant="outline" size="icon" className="h-8 w-8 md:h-9 md:w-9"><Share2 className="h-4 w-4" /></Button>
+            </div>
+          </div>
+
+          {/* Fiyat ve Değişim */}
+          {initialCoinData ? (
+            <div className="flex items-baseline gap-3 order-3">
++             {/* Tooltip ile "Vadeli Fiyat" olduğu belirtilebilir */}
+              <span className="text-3xl md:text-4xl font-bold" id="header-price">
+                {formatCurrency(initialCoinData.price)}
+              </span>
++             {/* Tooltip ile "Vadeli 24s Değişim" olduğu belirtilebilir */}
+              <span className={`text-lg font-semibold ${initialCoinData.priceChangePercent >= 0 ? 'text-green-500' : 'text-red-500'}`} id="header-change">
+                {initialCoinData.priceChangePercent >= 0 ? '+' : ''}{initialCoinData.priceChangePercent.toFixed(2)}%
+              </span>
+              <span className="text-sm text-muted-foreground"> (24s)</span>
+            </div>
+          ) : (
+            <div className="flex items-baseline gap-3 order-3">
+              <Skeleton className="h-10 w-32" /> <Skeleton className="h-6 w-16" />
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Client Component */}
+      <Suspense fallback={<CoinDetailSkeleton />}>
+        <CoinDetailClient
+          symbol={symbol}
+          initialData={initialCoinData} // Futures verisi geçiliyor
+          coinGeckoData={coinGeckoData}
+        />
+      </Suspense>
+    </div>
+  )
+}
+```
+
+## 3. `coinotag/src/app/kripto-paralar/futures/[symbol]/CoinDetailClient.tsx`
+
+```diff
+// ... imports ...
+import {
+-  getCryptoDataBySymbol, // Spot versiyonuydu
+  fetchFundingRates,
+-  fetchKlineData,        // Spot versiyonuydu
++  // Futures versiyonları veya parametreli halleri import edilecek
++  getCryptoFuturesDataBySymbol, // VEYA getCryptoDataBySymbol
++  fetchFuturesKlineData,        // VEYA fetchKlineData
+  calculateIndicators,
+  calculatePivotPoints,
+  determineTrend,
+  Kline, // Futures Kline yapısına uygun olmalı
+  IndicatorResults,
+  PivotPointResults,
+  TrendAnalysisResult,
+  calculateFibonacciRetracement,
+  FibonacciLevels,
+  determineSupportResistanceLevels
+} from '@/services/binanceService'
+-import { formatCurrency, formatNumber, formatPercent, formatMarketCap, formatVolumeWithShorthand, formatFullCurrency } from '@/lib/utils'
++import { formatCurrency, formatNumber, formatPercent, formatVolumeWithShorthand, formatFullCurrency } from '@/lib/utils' // formatMarketCap kaldırıldı/azaltıldı
+import TradingViewChart from './components/TradingViewChart'
+import { PriceAlerts } from '../../components/PriceAlerts' // Dizin düzeltildi ../ -> ../../
+import CoinDescription from './components/CoinDescription'
+import TechnicalAnalysisWidget from './components/TechnicalAnalysisWidget'
+import { useTheme } from 'next-themes'
+import { CoinDetailSkeleton } from '../../components/CoinDetailSkeleton' // Dizin düzeltildi ../ -> ../../
+import { type CoinGeckoInfo } from '@/services/coinInfoService'
+-import TokenomicsCard from './components/TokenomicsCard' // Spot odaklı, kaldırılabilir
+import { Skeleton } from '@/components/ui/skeleton'
+import { Progress } from "@/components/ui/progress"
+import RealtimeNewsFeed from './components/RealtimeNewsFeed'
+import CoinImage from './components/CoinImage'
+
+interface CoinDetailClientProps {
+  symbol: string
+- initialData: CryptoData | null; // Eski tip
++ initialData: CryptoFuturesData | null; // Futures tipi
+  coinGeckoData: CoinGeckoInfo | null;
+}
+
+// CoinData tipi futures'a uygun olmalı (marketCap çıkarılabilir)
+type CoinData = {
+  symbol: string
+  price: string // Vadeli fiyat
+  priceChangePercent: string // Vadeli değişim
+- marketCap: number // Kaldırıldı
+  volume: string // Vadeli hacim
+  high24h: string // Vadeli high
+  low24h: string // Vadeli low
+  fundingRate?: number
+  openInterest?: number
+  // ...
+}
+
+// CryptoData tipi CryptoFuturesData ile değiştirildi (yukarıdaki Props'ta)
+
+// PriceHistoryPoint aynı kalabilir
+
+const useWsData = (symbol: string, initialDataProp: CryptoFuturesData | null) => { // Tip güncellendi
+- const [coinData, setCoinData] = useState<CryptoData | null>(initialDataProp || null); // Eski tip
++ const [coinData, setCoinData] = useState<CryptoFuturesData | null>(initialDataProp || null); // Futures tipi
+  const [priceHistory, setPriceHistory] = useState<PriceHistoryPoint[]>([]);
+  const wsRef = useRef<WebSocket | null>(null);
+  // ... diğer ref'ler ...
+
+  // Funding Rate çekme aynı kalabilir ama state güncellemesi futures tipine uygun olmalı
+  useEffect(() => {
+    const loadFundingRates = async () => {
+      try {
+        await fetchFundingRates(); // Bu zaten futures olmalı
+-       const freshData = await getCryptoDataBySymbol(symbol); // Spot versiyonuydu
++       const freshData = await getCryptoFuturesDataBySymbol(symbol); // Futures versiyonu
+        if (freshData && mountedRef.current) {
+          setCoinData(prevData => ({
+            ...(prevData as CryptoFuturesData), // Tip güvencesi
+            ...freshData // Gelen futures verisiyle birleştir
+          }));
+        }
+      } catch (error) { // console.error("Funding rate veri çekme hatası:", error); }
+    };
+    loadFundingRates();
+    const interval = setInterval(loadFundingRates, 30000);
+    return () => clearInterval(interval);
+  }, [symbol]);
+
+  // WebSocket bağlantısı
+  useEffect(() => {
+    // ... (maxReconnectAttempts, closedByUser) ...
+    const setupWebSocket = () => {
+      // ... (reconnect kontrolü) ...
+      try {
+-       const ws = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}usdt@ticker`); // SPOT STREAM
++       // FUTURES STREAM (Örn: Mark Price)
++       const ws = new WebSocket(`wss://fstream.binance.com/ws/${symbol.toLowerCase()}usdt@markPrice@1s`); // Veya aggTrade vb.
+        wsRef.current = ws;
+
+        ws.onopen = () => { // console.log(`WebSocket connection opened: ${symbol} (Futures)`); /*...*/ };
+
+        ws.onmessage = (event) => {
+          if (!mountedRef.current) return;
+          try {
+-           const tickerData = JSON.parse(event.data); // Spot veri parse
++           const futuresStreamData = JSON.parse(event.data); // Futures veri parse
+
+            setCoinData(prevData => {
+-             if (!prevData) return null;
++             if (!prevData) return null; // Tip CryptoFuturesData olmalı
+
+-             const newPrice = parseFloat(tickerData.c);
+-             const newPriceChange = parseFloat(tickerData.P);
++             // Futures stream verisine göre parse et (markPrice@1s örneği)
++             const newPrice = parseFloat(futuresStreamData.p); // Mark Price
++             // Bu stream'de 24s değişim, hacim, high/low yok.
++             // Bunlar için ya REST ya da başka stream gerekli. Şimdilik state'deki eski değerler kalabilir.
+
+-             updatePageTitleAndHeader(symbol, newPrice, newPriceChange);
++             // Sadece fiyatla güncelle, değişimi state'ten al
++             updatePageTitleAndHeader(symbol, newPrice, prevData.priceChangePercent);
+
+              const newData: CryptoFuturesData = { // Tip güncellendi
+                ...(prevData as CryptoFuturesData), // Tip güvencesi
+                price: newPrice,
+-               priceChangePercent: newPriceChange,
+-               volume: parseFloat(tickerData.v) * newPrice,
+-               high: parseFloat(tickerData.h),
+-               low: parseFloat(tickerData.l),
+                lastUpdate: new Date().getTime() // lastUpdated olabilir, type'a bağlı
+              };
+
+              // Fiyat geçmişi ekle (aynı kalabilir)
+              // ...
+
+              return newData;
+            });
+          } catch (err) { // console.error("WebSocket veri işleme hatası:", err); }
+        };
+        ws.onerror = (error) => { // console.error(`WebSocket error (${symbol} Futures):`, error); };
+        ws.onclose = (event) => {
+           // ... (yeniden bağlanma mantığı) ...
+           // console.log(`WebSocket closed for ${symbol} (Futures): Code=${event.code}, Reason=${event.reason}`);
+           if (mountedRef.current && !closedByUser && reconnectAttemptRef.current < maxReconnectAttempts) {
+               const delay = Math.pow(2, reconnectAttemptRef.current) * 1000; // Exponential backoff
+               // console.log(`Attempting to reconnect ${symbol} (Futures) in ${delay / 1000}s...`);
+               reconnectTimeoutRef.current = setTimeout(setupWebSocket, delay);
+               reconnectAttemptRef.current++;
+           }
+        };
+      } catch (error) {
+          // console.error(`WebSocket setup failed for ${symbol} (Futures):`, error);
+          socketInitialized.current = false;
+          // Hata durumunda da yeniden bağlanmayı dene
+          if (mountedRef.current && !closedByUser && reconnectAttemptRef.current < maxReconnectAttempts) {
+              const delay = Math.pow(2, reconnectAttemptRef.current) * 1000;
+              reconnectTimeoutRef.current = setTimeout(setupWebSocket, delay);
+              reconnectAttemptRef.current++;
+          }
+      }
+    };
+
+    setupWebSocket();
+
+    return () => {
+      mountedRef.current = false;
+      closedByUser = true;
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      if (wsRef.current) {
+        // console.log(`Closing WebSocket connection for ${symbol} (Futures) on unmount.`);
+        wsRef.current.close();
+      }
+      socketInitialized.current = false;
+    };
+  }, [symbol]);
+
+  // Diğer state'ler (aynı kalabilir)
+  // ... (selectedInterval, indicators, pivots, fibonacci, trend, isLoadingTA, ...) ...
+
+  // Bildirimler (aynı kalabilir)
+  // ... (checkNotifications, handleRequestNotifications) ...
+
+  // Teknik Analiz Veri Çekme
+  const fetchAndCalculateTA = useCallback(async () => {
+    setIsLoadingTA(true);
+    try {
+-     const klineResult = await fetchKlineData(symbol, selectedInterval); // Spot versiyonu
++     const klineResult = await fetchFuturesKlineData(symbol, selectedInterval); // Futures versiyonu
+      if (klineResult && klineResult.length > 0) {
+        setKlineDataState(klineResult); // Kline verisini state'e ata
+        const priceData = klineResult.map(k => parseFloat(k.close));
+        const highData = klineResult.map(k => parseFloat(k.high));
+        const lowData = klineResult.map(k => parseFloat(k.low));
+        const volumeData = klineResult.map(k => parseFloat(k.quoteAssetVolume)); // quoteAssetVolume daha uygun olabilir
+
+        // Hesaplamalar futures kline verisi üzerinden yapılmalı
+        const calculatedIndicators = calculateIndicators(klineResult);
+        const calculatedPivots = calculatePivotPoints(klineResult);
+        const calculatedFibonacci = calculateFibonacciRetracement(klineResult);
+        const calculatedTrend = determineTrend(klineResult);
+        const srLevels = determineSupportResistanceLevels(klineResult, calculatedIndicators, calculatedPivots);
+
+        setIndicators(calculatedIndicators);
+        setPivotPoints(calculatedPivots);
+        setFibonacciLevels(calculatedFibonacci);
+        setTrend(calculatedTrend);
+        setSupportResistance(srLevels); // D/R seviyelerini state'e ata
+
+      } else {
+        // Hata durumu veya veri yok durumu
+        setIndicators({/* default empty */});
+        setPivotPoints(null);
+        setFibonacciLevels(null);
+        setTrend({ trend: 'Neutral', score: 0 });
+        setSupportResistance({ support: [], resistance: [] });
+      }
+    } catch (error) {
+      // console.error("Teknik analiz verisi çekme/hesaplama hatası:", error);
+       setIndicators({/* default empty */});
+       setPivotPoints(null);
+       setFibonacciLevels(null);
+       setTrend({ trend: 'Neutral', score: 0 });
+       setSupportResistance({ support: [], resistance: [] });
+    } finally {
+      setIsLoadingTA(false);
+    }
+  }, [symbol, selectedInterval]);
+
+  useEffect(() => {
+    fetchAndCalculateTA();
+  }, [fetchAndCalculateTA]); // Bağımlılık fetchAndCalculateTA
+
+  // Intersection Observer (aynı kalabilir)
+  // ... (taSectionRef, handleIntersection, useEffect) ...
+
+  // Memoized Değerler (aynı kalabilir)
+  // ... (memoizedIndicators, memoizedPivotPoints, ...) ...
+
+  // Fiyat ve Değişim (State'den gelen futures verisi kullanılmalı)
+  const coinPrice = coinData?.price ?? 0;
+  const coinPriceChangePercent = coinData?.priceChangePercent ?? 0;
+
+  // Teknik Özet Hesaplama (Fonksiyonlar futures verisiyle çalışmalı)
+  // calculateTechnicalSummary fonksiyonu futures Kline/Indicator verileriyle çalışmalı
+  const technicalSummary = useMemo(() => {
+    if (!indicators || isLoadingTA || !supportResistance) return null; // supportResistance eklendi
+    return calculateTechnicalSummary(
+        indicators,
+        pivotPoints,
+        supportResistance.resistance, // Hesaplanan D/R seviyeleri
+        supportResistance.support,    // Hesaplanan D/R seviyeleri
+        trend,
+        coinPrice
+    );
+  }, [indicators, pivotPoints, supportResistance, trend, coinPrice, isLoadingTA]); // supportResistance eklendi
+
+  // Render Kısmı
+  if (!coinData && !initialData) {
+    return <CoinDetailSkeleton />; // Veya daha spesifik bir skeleton
+  }
+
+  // İlk veri yüklenirken skeleton göster
+  if (!coinData) {
+      return <CoinDetailSkeleton />;
+  }
+
+  // --- Render İçindeki Değişiklikler ---
+
+  return (
+    <div className="space-y-6 md:space-y-8">
+
+      {/* Özet Kartlar (Piyasa Değeri kaldırılabilir/değiştirilebilir) */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 md:gap-4">
+        {/* Fiyat Değişimi (Aynı kalabilir) */}
+        {/* Hacim (Vadeli Hacim olarak etiketlenmeli) */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+-           <CardTitle className="text-sm font-medium">Hacim (24s)</CardTitle>
++           <CardTitle className="text-sm font-medium">Vadeli Hacim (24s)</CardTitle> {/* Etiket Güncellendi */}
+            <Layers className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold tabular-nums">
+              {formatVolumeWithShorthand(coinData.volume ?? 0)}
+            </div>
+            <p className="text-xs text-muted-foreground">USD</p>
+          </CardContent>
+        </Card>
+        {/* 24s Yüksek/Düşük (Vadeli olarak etiketlenmeli) */}
+        <Card>
+           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+-            <CardTitle className="text-sm font-medium">24s Yüksek / Düşük</CardTitle>
++            <CardTitle className="text-sm font-medium">Vadeli 24s Y/D</CardTitle> {/* Etiket Güncellendi */}
+             <Activity className="h-4 w-4 text-muted-foreground" />
+           </CardHeader>
+           <CardContent>
+             <div className="text-lg font-semibold tabular-nums">
+               <span className="text-green-500">{formatCurrency(coinData.high ?? 0)}</span>
+             </div>
+             <div className="text-lg font-semibold tabular-nums mt-1">
+                <span className="text-red-500">{formatCurrency(coinData.low ?? 0)}</span>
+             </div>
+           </CardContent>
+         </Card>
+        {/* Funding Rate (Aynı kalabilir) */}
+        {/* Open Interest (Aynı kalabilir) */}
+        {/* Piyasa Değeri Kartı Kaldırıldı/Değiştirildi */}
+-       {/* <Card> ... Market Cap Card ... </Card> */}
+      </div>
+
+
+      {/* Ana İçerik Alanı: Grafik ve Sağ Sütun */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 lg:gap-8">
+
+        {/* Sol Sütun: Grafik ve Teknik Analiz */}
+        <div className="lg:col-span-2 space-y-6">
+          {/* TradingView Grafik */}
+          <Card className="overflow-hidden">
+            <CardContent className="p-0">
+              <TradingViewChart
+                symbol={symbol}
++               marketType="futures" // Futures olduğunu belirt
+                interval={selectedInterval}
+                theme={theme} // Temayı geçir
+                className="h-[400px] md:h-[500px]"
+              />
+            </CardContent>
+          </Card>
+
+          {/* Teknik Analiz Bölümü */}
+          <div ref={taSectionRef}> {/* Intersection Observer için ref */}
+            <h2 className="text-xl md:text-2xl font-semibold mb-4" id="technical-analysis">Vadeli İşlem Teknik Analizi</h2> {/* Başlık Güncellendi */}
+            <TechnicalAnalysisTabs
+              symbol={symbol}
+              selectedInterval={selectedInterval}
+              onIntervalChange={setSelectedInterval}
+              indicatorResults={memoizedIndicators} // Memoized değerler
+              pivotPoints={memoizedPivotPoints}
+              fibonacciLevels={memoizedFibonacciLevels}
+              trend={trend}
+              isLoading={isLoadingTA}
+              coinPrice={coinPrice}
+              klineData={klineDataState} // Kline verisini prop olarak geç
+              supportResistance={supportResistance} // D/R seviyelerini prop olarak geç
+            />
+          </div>
+        </div>
+
+        {/* Sağ Sütun: Haberler, Açıklama, Tokenomics(?) */}
+        <div className="space-y-6">
+          {/* Gerçek Zamanlı Haber Akışı */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2">
+                 <Zap className="h-5 w-5 text-primary" />
+                 <span>{symbol} ile İlgili Haberler</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <RealtimeNewsFeed symbol={symbol} />
+            </CardContent>
+          </Card>
+
+          {/* Coin Açıklaması */}
+          {coinGeckoData && (
+             <Card>
+               <CardHeader>
+                  <CardTitle className="text-lg" id="about">{coinGeckoData?.name || symbol} Nedir?</CardTitle>
+               </CardHeader>
+               <CardContent>
+                 <CoinDescription
+                   description={coinGeckoData?.description?.tr || coinGeckoData?.description?.en || 'Açıklama bulunamadı.'}
+                   coinGeckoData={coinGeckoData}
+                   websiteUrl={coinGeckoData?.links?.homepage?.[0]}
+                   whitepaperUrl={coinGeckoData?.links?.whitepaper}
+                   // Diğer linkler...
+                 />
+               </CardContent>
+             </Card>
+           )}
+
+          {/* Tokenomics Kartı (Futures için anlamlı olmayabilir, kaldırılabilir) */}
+-         {/* {coinGeckoData && coinData && (
+-           <Card>
+-             <CardHeader><CardTitle>Token Bilgileri</CardTitle></CardHeader>
+-             <CardContent>
+-               <CoinInfoTokenomicsCard
+-                 symbol={symbol}
+-                 coinData={coinData} // Bu artık futures verisi, dikkat!
+-                 coinGeckoData={coinGeckoData}
+-               />
+-             </CardContent>
+-           </Card>
+-         )} */}
+
+        </div>
+      </div>
+
+      {/* Fiyat Alarmı Bileşeni */}
+      {/* <PriceAlerts symbol={symbol} currentPrice={coinPrice} /> */}
+      <Toaster position="bottom-right" richColors />
+    </div>
+  )
+}
+
+// Alt bileşenler (TechnicalAnalysisTabs, IndicatorCard vb.) içindeki etiketler
+// de "Vadeli" bağlamına uygun hale getirilmeli.
+// Örneğin, TechnicalAnalysisTabs içindeki özet başlığı:
+// <h3 className="text-lg font-semibold mb-4">Genel Teknik Özet ({selectedInterval})</h3>
+// yerine
+// <h3 className="text-lg font-semibold mb-4">Vadeli Teknik Özet ({selectedInterval})</h3>
+// gibi...
+```
+
+## 4. `coinotag/src/app/kripto-paralar/futures/[symbol]/components/TradingViewChart.tsx` (Varsayımsal)
+
+*Bu dosyanın içeriğini göremiyorum, ancak yapılması gerekenler:*
+
+```typescript
+interface TradingViewChartProps {
+  symbol: string;
++ marketType?: 'spot' | 'futures'; // Yeni prop eklendi
+  interval: string;
+  theme?: string;
+  // ... diğer props
+}
+
+export default function TradingViewChart({
+  symbol,
++ marketType = 'spot', // Default spot
+  interval,
+  theme,
+  // ... diğer props
+}: TradingViewChartProps) {
+
+  // ... useEffect içinde widget oluşturulurken ...
+
+  const tvSymbol = useMemo(() => {
+    const baseSymbol = symbol.toUpperCase();
++   if (marketType === 'futures') {
++     // Binance Futures Perpetual için sembol formatı (kontrol edilmeli)
++     return `BINANCE:${baseSymbol}USDT.P`; // Veya BINANCE:${baseSymbol}USDTPERP
++   } else {
+      // Spot için sembol formatı
+      return `BINANCE:${baseSymbol}USDT`;
++   }
+-   return `BINANCE:${baseSymbol}USDT`; // Eski hali
+  }, [symbol, marketType]);
+
+  const widgetOptions = {
+    symbol: tvSymbol, // Hesaplanan sembolü kullan
+    // ... diğer widget opsiyonları ...
+    theme: resolvedTheme === 'dark' ? 'dark' : 'light',
+  };
+
+  // ... widget oluşturma ve temizleme ...
+}
+```
+
+## 5. `coinotag/src/app/kripto-paralar/futures/[symbol]/components/CoinInfoTokenomicsCard.tsx` (Varsayımsal)
+
+*Bu bileşen spot odaklı olduğu için **kaldırılması** veya vadeli işlemle ilgili farklı bilgiler (örn: kontrat detayları, marjin bilgileri) gösterecek şekilde **tamamen yeniden tasarlanması** önerilir.*
+
+Eğer kaldırılacaksa:
+*   `CoinDetailClient.tsx` içindeki import ve kullanımını silin.
+*   Dosyanın kendisini silin.
+
+## 6. Diğer Alt Bileşenler (örn: `TechnicalAnalysisTabs`, `TechnicalAnalysisWidget`)
+
+*   Bu bileşenlerin içinde geçen "Teknik Analiz", "Teknik Özet" gibi başlık ve etiketlere "Vadeli" ifadesini ekleyin. Örn: "Vadeli Teknik Analiz Özeti".
+*   Gösterilen verilerin (indikatörler, sinyaller vb.) futures Kline verileri üzerinden hesaplandığından emin olun.

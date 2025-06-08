@@ -1,0 +1,158 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Coinotag: Project Vision, Architecture & Roadmap
+
+**Last Updated:** {Current Date}
+
+**Document Purpose:** This document outlines the vision, architecture, core components, development standards, and strategic roadmap for Coinotag. It serves as the central reference point for all current and future contributors to align efforts towards building the **leading global platform for crypto data and news.**
+
+## 1. Vision & Strategic Goals
+
+Coinotag aims for **global market leadership** by providing the most comprehensive, fastest, and most accessible cryptocurrency data and news platform. Our core strategic pillars are:
+
+*   **Global Reach & Dominance:** Achieve top ranking and user base across key global markets through **massive multi-language support (targeting 25+ languages)** served via locale-specific subdomains (e.g., `en.coinotag.com`, `jp.coinotag.com`, `ar.coinotag.com`) and culturally relevant content/features.
+*   **Uncompromising Speed & Performance:** Deliver a **blazing-fast user experience** on all devices through aggressive performance optimization, efficient data handling, and leveraging modern web technologies (Next.js on Vercel). Core Web Vitals excellence is paramount.
+*   **Maximum SEO Visibility:** Dominate search engine results pages (SERPs) for relevant crypto terms globally through **best-in-class technical SEO**, high-quality content, and strategic keyword targeting across all supported languages and subdomains. Maintain and enhance existing SEO equity during migration (e.g., handling `/feed/` routes).
+*   **Centralized Real-time Data Hub (`api.coinotag.com`):** **Optimize & Refine Scope:** Aggregate, process, and distribute **critical real-time data** (price, volume, FR, OI) and manage sensitive operations (API keys, paid features) via a dedicated API gateway built with **NestJS**. Avoid routing non-critical/static data through it to minimize cost and complexity.
+*   **Actionable Insights & Tools:** Provide users with powerful yet intuitive tools for market analysis, including advanced charting, technical indicators, **customizable alerts (Paid Feature)**, and curated news/analysis.
+*   **Seamless Content Integration:** Integrate content smoothly from legacy WordPress instances (migrated to hidden subdomains) and new translation workflows into the Next.js frontends. **Optimization:** Fetch WP content directly via Next.js backend (SSR/ISR) where possible, using `api.coinotag.com` only if complex caching/aggregation is needed.
+*   **Superior User Experience:** Offer a clean, intuitive, and reliable interface that caters to both novice and expert users. **Optimization:** Leverage client-side processing for display logic (formatting, simple calculations) to reduce server load.
+
+## 2. Technical Architecture & Core Technologies
+
+*   **Frontend Framework:** Next.js 15 (App Router) - Deployed on **Vercel** for global edge network, performance, and DX. Used for all language subdomains (`en.`, `jp.`, `ar.`, etc.) and the main `coinotag.com` (likely redirecting to default locale or locale-selection).
+*   **Central API Gateway (`api.coinotag.com`):** **NestJS** application responsible primarily for real-time data streams, alert engine (paid), and secure external API interaction. **Deployment:** Target **Google Cloud Run** for potential cost savings (scale-to-zero) and scalability, or other container orchestration platforms if needed for persistent connections.
+*   **Language:** TypeScript.
+*   **Styling:** Tailwind CSS, Shadcn UI, Radix UI.
+*   **State Management:** Zustand (Client-side global state).
+*   **Data Fetching (Frontend):**
+    *   **Real-time:** Connect to `api.coinotag.com` via **WebSockets or Server-Sent Events (SSE)** for live data subscriptions **only on relevant pages/components**.
+    *   **Non-Real-time:** Prioritize fetching via Next.js backend (SSR/ISR using `fetch` or SWR hooks) directly from sources (e.g., CoinGecko, WP GraphQL) or Vercel Edge Functions where feasible. Use `api.coinotag.com` for non-real-time data only when centralized caching/processing provides significant benefits. Data processing/formatting should primarily occur client-side.
+*   **Database:** **Required.** A cost-effective, scalable database (e.g., **Supabase free/pro tier, Neon, PlanetScale**) is essential for:
+    *   User accounts, profiles, and **subscription tiers**.
+    *   Storing user-specific price alerts (**Paid Feature**) and notification preferences.
+    *   Potentially storing comments, user settings, portfolio data (future).
+*   **Caching:**
+    *   **Cloudflare:** CDN for static assets, DNS, Security (WAF), Edge Cache (KV/Workers Cache API for API responses), potentially Argo Smart Routing.
+    *   **Redis/Dragonfly:** **Essential** for the `api.coinotag.com` (**NestJS**) gateway for:
+        *   Caching frequently accessed, processed real-time data snapshots.
+        *   Managing WebSocket states/subscriptions efficiently.
+        *   Potentially caching aggregated responses from external APIs if direct fetching is inefficient.
+    *   **Vercel:** Edge Caching, Next.js Data Cache (ISR/SSR).
+*   **Content Sources:**
+    *   Migrated WordPress instances on hidden subdomains (e.g., `wp-xxxxx-tr.coinotag.com`) serving content via **GraphQL API**.
+    *   Translation workflows feeding content likely via the English WordPress instance or a dedicated CMS/TMS.
+*   **External APIs:** Binance (REST & WebSocket), Bybit (REST), HyperLiquid (REST), CoinGecko, etc. Critical real-time connections and key management handled by `api.coinotag.com`. Others potentially accessed directly by Next.js backend. WordPress GraphQL APIs (Prefer direct access from Next.js).
+*   **Key Libraries:** As previously listed, plus potentially libraries for WebSocket/SSE handling (`socket.io`, `ws`), Web3 integration (`ethers.js`/`viem`), notification systems.
+
+## 3. Core Modules & Responsibilities
+
+*   **Vercel Project (Next.js Frontend):**
+    *   `src/app`: Handles routing for **all language subdomains**. Uses dynamic route segments and potentially route groups based on `[lang]` parameter provided by middleware/subdomain detection.
+    *   `src/components`: Reusable UI.
+    *   `src/lib`: Frontend utilities, data fetching helpers (connecting to `api.coinotag.com`).
+    *   `src/hooks`: Custom hooks for interacting with real-time data, user state, etc.
+    *   `src/store`: Zustand stores.
+    *   `middleware.ts`: Detects requested language/subdomain, potentially handles auth, sets necessary headers/context for rendering.
+*   **`api.coinotag.com` Service (NestJS on Cloud Run/Other):**
+    *   **Real-time Engine:** Maintains persistent WebSocket connections to exchanges, processes/aggregates critical data streams.
+    *   **Data Aggregation:** Focus on real-time. Avoid fetching/storing static data better handled by Next.js/client.
+    *   **Caching Layer:** Interfaces heavily with Redis/Dragonfly for real-time state and snapshots.
+    *   **API Interface:** Exposes efficient endpoints (WebSocket/SSE for real-time, potentially minimal REST/GraphQL for specific needs like alert management).
+    *   **Alerting Engine (Paid Feature):** Monitors price movements against user-defined alerts (stored in DB) and triggers notifications based on user subscription status.
+    *   **Security & Auth:** Manages external API keys, handles authentication/authorization for its endpoints, validates user subscription tiers for paid features.
+
+## 4. Internationalization (i18n) Strategy - 25+ Languages via Subdomains
+
+*   **Structure:** Each language will reside on its own subdomain (e.g., `en.coinotag.com`, `jp.coinotag.com`). `coinotag.com` might redirect to the default locale (e.g., `tr.`) or a language selection page.
+*   **Content Sourcing:**
+    *   `tr`, `en`, `jp`: Pull content from corresponding migrated WordPress instances (`wp-xxxxx-tr/en/jp`) via GraphQL. **Definitive Strategy:** Content will be fetched **directly by the Next.js backend (SSR/ISR)** and cached aggressively using Vercel Data Cache, Next.js ISR, and Cloudflare Edge Caching. **WordPress content will NOT be copied or synchronized to Supabase.**
+    *   Other 22+ Languages: Source translated content. **Definitive Strategy:** Fetch translated content **directly via Next.js backend** based on locale, utilizing the same caching mechanisms. WordPress remains the source of truth for content.
+*   **Frontend Implementation:**
+    *   `middleware.ts` identifies the target language from the subdomain.
+    *   Use `next-intl` (or similar).
+    *   Fetch locale-specific content preferably via Next.js backend, not `api.coinotag.com`.
+*   **SEO:** Implement `hreflang` tags across all subdomains, generate locale-specific sitemaps, ensure proper canonicalization.
+
+## 5. API Strategy: `api.coinotag.com` - Focused Real-time & Secure Hub (NestJS)
+
+*   **Core Principle:** Minimize the scope and cost of the central API. Decouple real-time data distribution and sensitive operations from the Next.js presentation layer. Frontends and the Next.js backend fetch other data directly where feasible.
+*   **Responsibilities:**
+    *   Maintain persistent real-time connections (WebSockets) to data sources (Binance, etc.). **(Primary stateful role)**.
+    *   Aggregate, process, and standardize critical real-time data streams.
+    *   **Cache heavily** using Redis/Dragonfly specifically for real-time snapshots and WebSocket state management.
+    *   Provide **highly efficient WebSocket/SSE endpoints** for pushing real-time updates to subscribed frontend clients.
+    *   Provide minimal, secure REST/GraphQL endpoints for managing paid features like **Alerts (Paid Feature)**.
+    *   Manage user alerts (**Paid Feature**): Check triggered alerts against real-time data and initiate notifications for subscribed users.
+    *   Securely manage all external API keys and credentials.
+    *   **Avoid:** Serving static content, basic non-real-time data from external APIs (CoinGecko), or performing simple data transformations better suited for the client/Next.js backend. **Crucially, the API Gateway will NOT act as a proxy for WordPress content; all content fetching is the responsibility of the Next.js backend.**
+*   **Deployment & Scalability:** Target **Google Cloud Run** with **NestJS** for cost-efficiency and scalability. Ensure low latency access to its database and Redis instance. Consider minimum instances configuration on Cloud Run if near-instant cold starts are critical for WS connections, balancing cost and performance.
+
+## 6. Real-time Data Distribution & Performance
+
+*   **Goal:** Efficient propagation: source -> `api.coinotag.com` (NestJS) -> Subscribed Frontend Clients.
+*   **Mechanism:**
+    1.  `api.coinotag.com` receives real-time updates via WebSocket.
+    2.  Processes the update (minimal processing).
+    3.  Updates Redis cache (snapshots/state).
+    4.  **Pushes** the update via its own WebSocket/SSE connections **only to relevant subscribed frontend clients**. Client-side logic determines subscription needs based on the current view.
+*   **Optimization:**
+    *   Minimize processing overhead within `api.coinotag.com`. Focus on aggregation and distribution.
+    *   Efficient WebSocket/SSE implementation in NestJS.
+    *   Client-side data handling: Perform calculations, formatting, and state updates on the client based on received raw real-time data.
+
+## 7. Roadmap & Action Items (Revised Priorities & Cost Focus)
+
+*   **[P0] Design & Build `api.coinotag.com` (v1 - NestJS):**
+    *   **[COMPLETED]** Basic WebSocket/SSE endpoint for price data distribution to frontend.
+    *   Focus on core real-time data ingestion (e.g., Binance WS for spot & futures), Redis/Dragonfly caching (snapshots/state for tickers, funding rates, OI). **(Critical Path - Ongoing, Keep it Lean)**
+*   **[P0] Select & Setup Infrastructure:**
+    *   **[IN PROGRESS/PARTIALLY COMPLETED]** Initial infrastructure for `api.coinotag.com` (deployment platform like Google Cloud Run, Redis/Dragonfly instance) and database (e.g., Supabase). Essential for SSE data flow and upcoming features. **(Critical Path - Cost Focus)**
+*   **[P0] Setup Vercel Project & Base Frontend:**
+    *   **[COMPLETED]** Configure Next.js for basic routing, layout.
+    *   **[COMPLETED]** Implement `/kripto-paralar` (market list) page with real-time SSE connection to `api.coinotag.com`, including search, category, and main filters (gainers, losers, volume, etc.).
+    *   **[COMPLETED]** Implement client-rendered spot coin detail pages (`/kripto-paralar/[symbol]`) with real-time data updates and relevant information.
+    *   **[COMPLETED]** Implement client-rendered futures coin detail pages (`/kripto-paralar/futures/[symbol]`) with real-time data updates, futures-specific metrics (Funding Rate, Open Interest), and TradingView chart integration for futures markets.
+    *   **[IN PROGRESS]** Implement direct data fetching (SSR/ISR/Client) for non-real-time data (e.g., CoinGecko basic info, descriptions) across relevant pages.
+*   **[P1] Implement i18n Framework:** Integrate `next-intl`, configure middleware, setup initial translation workflow (`tr`, `en`, `jp`). Fetch translations/content directly in Next.js.
+*   **[P1] WordPress Content Integration:** Build mechanism within **Next.js backend (SSR/ISR)** to fetch/cache GraphQL data from hidden WP instances. Minimize `api.coinotag.com` involvement.
+*   **[P1] User Auth & Alert Persistence (Paid):** Implement Web3 login (`next-auth`?), DB schema for users/**tiers**/alerts, **secure API endpoints** in `api.coinotag.com` (NestJS) to manage **paid alerts**.
+*   **[P1] Alert Triggering & Notification (Paid):** Implement alert checking logic in `api.coinotag.com` (NestJS) and basic notification for **paid users**.
+*   **[P2] Cloudflare Integration:** Configure CDN, security, DNS. Explore **aggressive edge caching** for static assets and potentially Next.js API routes/pages.
+*   **[P2] Refactor/Optimize `binanceService` Logic:** Ensure logic resides within `api.coinotag.com` (NestJS) and is highly optimized for real-time processing.
+*   **[P2] Scale Language Support:** Implement workflow for adding the next batch of languages.
+*   **[P2] Comprehensive Testing & Monitoring:** Implement robust testing and monitoring for both the frontend and the crucial `api.coinotag.com` service.
+*   **[P3] Advanced Features:** Email notifications, portfolio, advanced dashboards, etc.
+
+## 8. Development Standards & Practices
+
+*   **Code Style:** Enforce ESLint and Prettier rules strictly.
+*   **Commit Messages:** Use Conventional Commits format (`feat:`, `fix:`, `chore:`, etc.).
+*   **Branching Strategy:** Define and adhere to a model (e.g., Gitflow). `main` must always be production-ready. Develop on feature branches.
+*   **Pull Requests (PRs):** Mandatory for all changes to `main` or `develop`. Require at least one reviewer approval and passing CI checks (lint, tests, build).
+*   **Documentation:** Maintain JSDoc/TSDoc comments for complex logic. Keep this `coinotag.mdc` document updated regularly. Add architecture decision records (ADRs) for significant choices.
+*   **Dependency Management:** Discuss adding new dependencies. Keep `package-lock.json` committed and updated.
+*   **Performance Budgets:** Define performance budgets (e.g., LCP < 2s, bundle size limits) and enforce them in CI.
+
+## 9. Changelog
+
+*   **{Current Date}:**
+    *   **Frontend (Vercel - Next.js):**
+        *   Implemented `/kripto-paralar` (market overview) page:
+            *   Real-time data updates via SSE from `api.coinotag.com`.
+            *   Client-side filtering by categories (Layer 1, DeFi, Meme, etc.).
+            *   Client-side main filters (Top Yükselenler, Düşenler, Hacim, Funding, OI).
+            *   Client-side search functionality for listed cryptocurrencies.
+        *   Developed client-rendered spot coin detail pages (`/kripto-paralar/[symbol]`) displaying live price, charts (TradingView), and CoinGecko information.
+        *   Developed client-rendered futures coin detail pages (`/kripto-paralar/futures/[symbol]`) displaying live futures prices, Funding Rate, Open Interest, TradingView futures charts, and CoinGecko information.
+        *   Established base Next.js project structure, styling with Tailwind CSS and Shadcn UI.
+    *   **API Gateway (`api.coinotag.com` - NestJS):**
+        *   Operational SSE endpoint (`/events/ticker`) serving aggregated real-time ticker data (spot and futures) to the frontend. (Assumes backend processes for data ingestion from sources like Binance and caching with Redis/Dragonfly are partially or fully operational to support this).
+    *   **General:**
+        *   Significant progress on P0 items, establishing the foundational real-time data flow from API to the Next.js frontend for core market data and individual coin pages.
+        *   Core infrastructure components (API deployment, caching layer for API) assumed to be in a working state to support the live SSE data.
+*   **{Previous Date}:** Refined architecture focusing on cost-optimization and performance. Specified **NestJS** for `api.coinotag.com` backend, targeting **Google Cloud Run**. Reduced scope of `api.coinotag.com` to core real-time data, security, and paid features (like **Alerts**). Emphasized direct data fetching (Next.js backend/client) for non-critical data and client-side processing. Updated roadmap priorities accordingly.
+*   **{Initial Date}:** Initial detailed analysis, component breakdown, i18n/API strategy identification, added roadmap/rules (Turkish).

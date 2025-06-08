@@ -1,0 +1,4 @@
+CORS_ORIGINS: "https://coinotag.com,https://www.coinotag.com,https://coinotag.news,https://www.coinotag.news"
+UPSTASH_REDIS_URL: "redis://default:Ac-ngAAIjcDE3M2Y2ZTQ4NDc5MDRhMGM4N2FkMjBiOWI0M2Y4Y2NhNHAxMA@able-termite-45593.upstash.io:6379"
+REDIS_TOKEN: "Ac-ngAAIjcDE3M2Y2ZTQ4NDc5MDRhMGM4N2FkMjBiOWI0M2Y4Y2NhNHAxMA"
+NODE_ENV: "production" 
