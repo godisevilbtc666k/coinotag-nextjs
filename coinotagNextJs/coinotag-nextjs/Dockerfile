@@ -35,7 +35,7 @@ COPY --from=builder --chown=nestjs:nodejs /app/package*.json ./
 USER nestjs
 
 # Expose port
-EXPOSE 3001
+EXPOSE 8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \

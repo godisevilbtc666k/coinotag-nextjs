@@ -25,7 +25,7 @@ gcloud config set project $PROJECT_ID
 
 # Build and push Docker image
 echo "🏗️  Building Docker image..."
-docker build -t gcr.io/coinotag-en/coinotag-api .
+docker build -t gcr.io/coinotag-en/coinotag-api -f Dockerfile ./api
 
 echo "📦 Pushing image to Google Container Registry..."
 docker push gcr.io/coinotag-en/coinotag-api
